@@ -3,33 +3,48 @@ import os
 import logging
 from datetime import datetime
 
-from aiohttp import web
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.utils import executor
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
 from app.db import init_db, get_active_tasks
 from app.bot_handlers import register_handlers, schedule_task_jobs
 
+# -----------------------------------------
+# Настройка логирования
+# -----------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ----------------- ENV -----------------
+# -----------------------------------------
+# Переменные окружения
+# -----------------------------------------
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://...onrender.com/webhook
+WEBHOOK_BASE = os.getenv("WEBHOOK_URL")  # например: https://telegram-task-bot-team-final.onrender.com
+
 if not BOT_TOKEN:
     raise SystemExit("⚠️ BOT_TOKEN не задан в переменных окружения")
-if not WEBHOOK_URL:
+
+if not WEBHOOK_BASE:
     raise SystemExit("⚠️ WEBHOOK_URL не задан в переменных окружения")
 
-# Render передаёт порт в переменной PORT
-APP_HOST = "0.0.0.0"
-APP_PORT = int(os.getenv("PORT", "10000"))
+# путь, на который Telegram шлёт апдейты
+WEBHOOK_PATH = "/webhook"
+# полный URL вебхука (то, что мы задаём через setWebhook)
+WEBHOOK_URL = WEBHOOK_BASE.rstrip("/") + WEBHOOK_PATH
 
-# ----------------- BOT / DP / SCHEDULER -----------------
+# Host/port для Render (он даёт PORT в env)
+WEBAPP_HOST = "0.0.0.0"
+WEBAPP_PORT = int(os.getenv("PORT", "10000"))
+
+# -----------------------------------------
+# Инициализация бота, диспетчера, планировщика
+# -----------------------------------------
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
@@ -37,46 +52,27 @@ dp = Dispatcher(bot, storage=storage)
 scheduler = AsyncIOScheduler()
 scheduler.start()
 
-# регистрируем хэндлеры, как и раньше
-register_handlers(dp, scheduler)
 
+# -----------------------------------------
+# Хуки старта и остановки
+# -----------------------------------------
+async def on_startup(dispatcher: Dispatcher):
+    logger.info("🚀 Запуск бота (webhook)...")
 
-# ----------------- WEBHOOK HANDLER -----------------
-async def handle_webhook(request: web.Request):
-    """
-    Принимаем апдейт от Telegram и передаём его в Dispatcher.
-    ВАЖНО: перед этим выставляем current bot / dispatcher,
-    иначе m.answer() не знает, какой bot использовать.
-    """
-    # привязываем текущий bot и dp к контексту aiogram
-    Bot.set_current(bot)
-    Dispatcher.set_current(dp)
-
-    data = await request.json()
-    update = types.Update(**data)
-    await dp.process_update(update)
-    return web.Response(text="OK")
-
-
-# ----------------- STARTUP / SHUTDOWN -----------------
-async def on_startup(app: web.Application):
-    logger.info("🚀 Старт приложения, инициализируем БД и webhook")
-
-    # 1. БД
+    # Инициализируем БД
     init_db()
     logger.info("✅ База инициализирована")
 
-    # 2. Webhook
-    await bot.set_webhook(WEBHOOK_URL)
-    logger.info(f"🔗 Webhook установлен: {WEBHOOK_URL}")
+    # Регистрируем хэндлеры (кнопки, команды и т.п.)
+    register_handlers(dp, scheduler)
 
-    # 3. Рескейдим задачи из БД
+    # Рескейдим активные задачи из БД
     tasks = get_active_tasks()
     for t in tasks:
         try:
             deadline = datetime.fromisoformat(t["deadline_ts"])
         except Exception:
-            logger.exception("❌ Не удалось прочитать дедлайн у задачи %s", t["id"])
+            logger.exception("❌ Не удалось преобразовать дедлайн у задачи %s", t["id"])
             continue
 
         schedule_task_jobs(
@@ -87,26 +83,40 @@ async def on_startup(app: web.Application):
             deadline=deadline,
             scheduler=scheduler,
         )
-    logger.info("🔁 Активные задачи рескейджены.")
+
+    # Настраиваем webhook в Telegram
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(WEBHOOK_URL)
+    logger.info(f"🌐 Webhook установлен: {WEBHOOK_URL}")
 
 
-async def on_shutdown(app: web.Application):
+async def on_shutdown(dispatcher: Dispatcher):
     logger.info("🛑 Остановка, удаляем webhook и гасим планировщик")
-    await bot.delete_webhook()
-    scheduler.shutdown(wait=False)
-    await bot.session.close()
+    try:
+        await bot.delete_webhook()
+    except Exception:
+        logger.exception("Ошибка при удалении webhook")
+
+    try:
+        scheduler.shutdown(wait=False)
+    except Exception:
+        logger.exception("Ошибка при остановке scheduler")
+
+    await storage.close()
+    await storage.wait_closed()
 
 
-# ----------------- ENTRYPOINT -----------------
-def main():
-    app = web.Application()
-    app.router.add_post("/webhook", handle_webhook)
-
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-
-    web.run_app(app, host=APP_HOST, port=APP_PORT)
-
-
+# -----------------------------------------
+# Точка входа
+# -----------------------------------------
 if __name__ == "__main__":
-    main()
+    logger.info("💡 Бот запускается через webhook...")
+    executor.start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        skip_updates=True,
+        host=WEBAPP_HOST,
+        port=WEBAPP_PORT,
+    )
