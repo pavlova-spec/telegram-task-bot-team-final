@@ -1,3 +1,5 @@
+# app/bot_handlers.py
+import logging
 from datetime import datetime, timedelta
 
 from aiogram import types, Dispatcher
@@ -18,6 +20,8 @@ from app.db import (
     get_task,
     get_task_completions,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TaskFSM(StatesGroup):
@@ -277,6 +281,19 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         await m.answer(
             f"🔒 Задача #{task_id} «{task['title']}» закрыта и больше не будет в списке.",
             reply_markup=main_menu(),
+        )
+
+    # ────────────────────────────────
+    # Отладочный хэндлер: ловит всё, что не поймали другие
+    # ────────────────────────────────
+    @dp.message_handler()
+    async def debug_fallback(m: types.Message):
+        logger.info(
+            "DEBUG MESSAGE: chat_id=%s type=%s from=%s text=%r",
+            m.chat.id,
+            m.chat.type,
+            m.from_user.id if m.from_user else None,
+            m.text,
         )
 
 
