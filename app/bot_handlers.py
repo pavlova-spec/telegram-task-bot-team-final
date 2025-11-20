@@ -28,6 +28,7 @@ class TaskFSM(StatesGroup):
     """
     Один шаг: ждём строку вида
     "Сделать отчёт 28.10.2025 14:30"
+    (оставляем для совместимости с кнопкой «Новая задача»)
     """
     waiting_single_line = State()
 
@@ -46,8 +47,9 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             f"🙌 Привет, {m.from_user.first_name}!\n\n"
             "Я твой бот-дедлайнер: помогу не забыть задачи, "
             "даже когда ты забываешь, что выспаться тоже задача 😎\n\n"
-            "Жми кнопки снизу или кидай задачи в формате:\n"
-            "<b>Сделать отчёт 28.10.2025 14:30</b>",
+            "Можешь просто кинуть строку вида:\n"
+            "<b>Сделать отчёт 28.10.2025 14:30</b>\n"
+            "или воспользоваться кнопками ниже 👇",
             reply_markup=main_menu(),
             parse_mode="HTML",
         )
@@ -55,7 +57,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
     # ────────────────────────────────
     # Кнопка «Новая задача»
     # ────────────────────────────────
-    @dp.message_handler(lambda m: m.text and "Новая задача" in m.text)
+    @dp.message_handler(lambda m: m.text == "➕ Новая задача")
     async def new_task(m: types.Message, state: FSMContext):
         await m.answer(
             "📝 Кидай задачу одной строкой:\n\n"
@@ -65,13 +67,11 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
         await TaskFSM.waiting_single_line.set()
 
-    # Обработка однострочного формата
+    # Обработка однострочного формата ПОСЛЕ кнопки (FSM)
     @dp.message_handler(state=TaskFSM.waiting_single_line)
     async def create_task_single_line(m: types.Message, state: FSMContext):
         text = (m.text or "").strip()
 
-        # Ожидаем, что последние 16 символов — это "dd.mm.YYYY HH:MM"
-        # Пример: "Сделать отчёт 28.10.2025 14:30"
         if len(text) < 17:
             await m.answer(
                 "❌ Нужен формат:\n"
@@ -103,7 +103,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
         title = title_part
 
-        # записываем задачу в БД
         task_id = add_task(
             chat_id=m.chat.id,
             title=title,
@@ -111,7 +110,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             creator_id=m.from_user.id,
         )
 
-        # планируем напоминания (3 дня, 1 день, день Х)
         schedule_task_jobs(
             dp=dp,
             task_id=task_id,
@@ -131,9 +129,9 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         await state.finish()
 
     # ────────────────────────────────
-    # Список задач
+    # Кнопка «Мои задачи»
     # ────────────────────────────────
-    @dp.message_handler(lambda m: m.text and "Мои задачи" in m.text)
+    @dp.message_handler(lambda m: m.text == "📋 Мои задачи")
     async def list_tasks(m: types.Message):
         rows = get_tasks(m.chat.id)  # sync вызов
         if not rows:
@@ -149,10 +147,9 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         for r in rows:
             dl = datetime.fromisoformat(r["deadline_ts"]).strftime("%d.%m.%Y %H:%M")
 
-            # кто уже отметил выполнение
             completions = get_task_completions(r["id"])
             if completions:
-                # Вариант А — показываем именно user_id тех, кто нажал кнопку
+                # показываем user_id тех, кто нажал кнопку
                 ids_str = ", ".join(str(c["user_id"]) for c in completions)
                 done_line = f"✅ Выполнили (user_id): {ids_str}"
             else:
@@ -165,7 +162,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             )
             text_lines.append(block)
 
-            # инлайн-кнопки для этой задачи
             kb.add(
                 InlineKeyboardButton(
                     text=f"✅ Я сделал(а): {r['title'][:20]}",
@@ -180,6 +176,77 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         await m.answer(
             "🗓 <b>Активные задачи:</b>\n\n" + "\n\n".join(text_lines),
             reply_markup=kb,
+            parse_mode="HTML",
+        )
+
+    # ────────────────────────────────
+    # ГЛОБАЛЬНЫЙ ОДНОСТРОЧНЫЙ ВВОД (в любом чате, без FSM)
+    # ────────────────────────────────
+    @dp.message_handler(
+        lambda m: m.text and not m.text.startswith("/"),
+        state=None,  # только когда нет активного FSM-состояния
+    )
+    async def inline_task_anywhere(m: types.Message):
+        """
+        Любое сообщение без / и без FSM-состояния пробуем
+        распарсить как: "Название задачи 28.10.2025 14:30".
+        Если не получилось — тихо игнорируем.
+        """
+
+        text = m.text.strip()
+
+        # Не трогаем тексты кнопок
+        if text in ("➕ Новая задача", "📋 Мои задачи"):
+            return
+
+        if len(text) < 17:
+            logger.info("INLINE PARSE SKIP (too short): %r", text)
+            return
+
+        dt_str = text[-16:]           # "28.10.2025 14:30"
+        title_part = text[:-16].strip()
+
+        if not title_part:
+            logger.info("INLINE PARSE SKIP (no title): %r", text)
+            return
+
+        try:
+            deadline = datetime.strptime(dt_str, "%d.%m.%Y %H:%M")
+        except ValueError:
+            logger.info("INLINE PARSE SKIP (bad datetime): %r", text)
+            return
+
+        title = title_part
+
+        task_id = add_task(
+            chat_id=m.chat.id,
+            title=title,
+            deadline=deadline,
+            creator_id=m.from_user.id,
+        )
+
+        schedule_task_jobs(
+            dp=dp,
+            task_id=task_id,
+            chat_id=m.chat.id,
+            title=title,
+            deadline=deadline,
+            scheduler=scheduler,
+        )
+
+        logger.info(
+            "INLINE TASK CREATED: chat_id=%s task_id=%s title=%r deadline=%s",
+            m.chat.id,
+            task_id,
+            title,
+            deadline.isoformat(),
+        )
+
+        await m.answer(
+            f"✅ Задача «<b>{title}</b>» сохранена.\n"
+            f"Дедлайн: <b>{deadline.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+            "Список активных задач — в кнопке <b>«📋 Мои задачи»</b>.",
+            reply_markup=main_menu(),
             parse_mode="HTML",
         )
 
@@ -221,7 +288,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
         user = callback_query.from_user
 
-        # фиксируем, что этот user_id выполнил задачу
         add_completion(task_id, user.id)
 
         await callback_query.answer(
@@ -275,7 +341,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             await m.answer("❌ Задача с таким ID не найдена в этом чате.")
             return
 
-        # меняем статус -> задача исчезнет из «Мои задачи»
         mark_done(task_id)
 
         await m.answer(
@@ -284,7 +349,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
 
     # ────────────────────────────────
-    # Отладочный хэндлер: ловит всё, что не поймали другие
+    # Отладочный хэндлер: всё, что не поймали другие
     # ────────────────────────────────
     @dp.message_handler()
     async def debug_fallback(m: types.Message):
