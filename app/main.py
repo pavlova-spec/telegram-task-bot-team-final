@@ -88,7 +88,8 @@ def create_app() -> web.Application:
     # регистрируем все хэндлеры
     register_handlers(dp, scheduler)
 
-    # маршрут вебхука
+    # маршруты вебхука — принимаем и на /, и на /webhook
+    app.router.add_post("/", handle_webhook)
     app.router.add_post("/webhook", handle_webhook)
 
     app.on_startup.append(on_startup)
