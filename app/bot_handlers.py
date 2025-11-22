@@ -28,7 +28,7 @@ class TaskFSM(StatesGroup):
     """
     Один шаг: ждём строку вида
     "Сделать отчёт 28.10.2025 14:30"
-    (оставляем для совместимости с кнопкой «Новая задача»)
+    (режим по кнопке «Новая задача»)
     """
     waiting_single_line = State()
 
@@ -67,7 +67,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
         await TaskFSM.waiting_single_line.set()
 
-    # Обработка однострочного формата ПОСЛЕ кнопки (FSM)
+    # Обработка однострочного формата (FSM после кнопки)
     @dp.message_handler(state=TaskFSM.waiting_single_line)
     async def create_task_single_line(m: types.Message, state: FSMContext):
         text = (m.text or "").strip()
@@ -133,7 +133,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
     # ────────────────────────────────
     @dp.message_handler(lambda m: m.text == "📋 Мои задачи")
     async def list_tasks(m: types.Message):
-        rows = get_tasks(m.chat.id)  # sync вызов
+        rows = get_tasks(m.chat.id)
         if not rows:
             await m.answer(
                 "📭 Активных задач нет — можно официально прокрастинировать 🙌",
@@ -149,7 +149,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
             completions = get_task_completions(r["id"])
             if completions:
-                # показываем user_id тех, кто нажал кнопку
                 ids_str = ", ".join(str(c["user_id"]) for c in completions)
                 done_line = f"✅ Выполнили (user_id): {ids_str}"
             else:
@@ -184,7 +183,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
     # ────────────────────────────────
     @dp.message_handler(
         lambda m: m.text and not m.text.startswith("/"),
-        state=None,  # только когда нет активного FSM-состояния
+        state=None,
     )
     async def inline_task_anywhere(m: types.Message):
         """
@@ -192,7 +191,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         распарсить как: "Название задачи 28.10.2025 14:30".
         Если не получилось — тихо игнорируем.
         """
-
         text = m.text.strip()
 
         # Не трогаем тексты кнопок
@@ -203,7 +201,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             logger.info("INLINE PARSE SKIP (too short): %r", text)
             return
 
-        dt_str = text[-16:]           # "28.10.2025 14:30"
+        dt_str = text[-16:]
         title_part = text[:-16].strip()
 
         if not title_part:
@@ -251,7 +249,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
 
     # ────────────────────────────────
-    # /done 5  — старый способ закрыть задачу
+    # /done 5 — старый способ закрыть задачу
     # ────────────────────────────────
     @dp.message_handler(commands=["done"])
     async def done_cmd(m: types.Message):
@@ -287,7 +285,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             return
 
         user = callback_query.from_user
-
         add_completion(task_id, user.id)
 
         await callback_query.answer(
@@ -349,7 +346,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
 
     # ────────────────────────────────
-    # Отладочный хэндлер: всё, что не поймали другие
+    # Отладочный хэндлер — всё, что не поймали другие
     # ────────────────────────────────
     @dp.message_handler()
     async def debug_fallback(m: types.Message):
