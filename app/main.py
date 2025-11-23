@@ -30,6 +30,10 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
+# ✅ ВАЖНО: говорим aiogram'у, какой бот и диспетчер «текущие»
+Bot.set_current(bot)
+Dispatcher.set_current(dp)
+
 scheduler = AsyncIOScheduler()
 
 
@@ -50,10 +54,11 @@ async def on_startup(app: web.Application):
     scheduler.start()
 
     # 4) Рескейдим активные задачи
+    from datetime import datetime
+
     tasks = get_active_tasks()
     for t in tasks:
         try:
-            from datetime import datetime
             deadline = datetime.fromisoformat(t["deadline_ts"])
         except Exception:
             logger.exception(
@@ -91,7 +96,6 @@ async def on_shutdown(app: web.Application):
     except Exception:
         pass
 
-    # предупреждение депрекейшена нам не мешает, но можно игнорировать
     await bot.session.close()
 
 
