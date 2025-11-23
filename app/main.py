@@ -30,7 +30,7 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# ✅ ВАЖНО: говорим aiogram'у, какой бот и диспетчер «текущие»
+# ВАЖНО: контекст для aiogram (чтобы m.answer() работал)
 Bot.set_current(bot)
 Dispatcher.set_current(dp)
 
@@ -39,31 +39,29 @@ scheduler = AsyncIOScheduler()
 
 async def on_startup(app: web.Application):
     """
-    Старт приложения (Render дергает при запуске).
+    Старт приложения.
     """
     logger.info("🚀 Стартуем, инициализируем БД и webhook")
+
+    from datetime import datetime
 
     # 1) БД
     init_db()
     logger.info("✅ База инициализирована")
 
-    # 2) Регистрируем хэндлеры
+    # 2) Хэндлеры
     register_handlers(dp, scheduler)
 
-    # 3) Стартуем планировщик
+    # 3) Планировщик
     scheduler.start()
 
-    # 4) Рескейдим активные задачи
-    from datetime import datetime
-
+    # 4) Рескейдим задачи
     tasks = get_active_tasks()
     for t in tasks:
         try:
             deadline = datetime.fromisoformat(t["deadline_ts"])
         except Exception:
-            logger.exception(
-                "❌ Не удалось преобразовать дедлайн у задачи %s", t["id"]
-            )
+            logger.exception("❌ Не удалось преобразовать дедлайн у задачи %s", t["id"])
             continue
 
         schedule_task_jobs(
@@ -82,7 +80,7 @@ async def on_startup(app: web.Application):
 
 async def on_shutdown(app: web.Application):
     """
-    Аккуратное завершение при остановке.
+    Аккуратное завершение.
     """
     logger.info("🛑 Остановка, удаляем webhook и гасим планировщик")
 
@@ -96,12 +94,14 @@ async def on_shutdown(app: web.Application):
     except Exception:
         pass
 
-    await bot.session.close()
+    # предупреждение можно игнорировать, но ок
+    session = await bot.get_session()
+    await session.close()
 
 
 async def handle_webhook(request: web.Request) -> web.Response:
     """
-    Приём апдейтов от Telegram.
+    Приём апдейтов от Telegram (POST).
     """
     data = await request.json()
     update = Update.to_object(data)
@@ -109,12 +109,23 @@ async def handle_webhook(request: web.Request) -> web.Response:
     return web.Response(text="OK")
 
 
+# ✅ НОВОЕ: health-check для Render
+async def healthcheck(request: web.Request) -> web.Response:
+    """
+    Render делает GET /, ему нужен 200 OK.
+    """
+    return web.Response(text="OK", status=200)
+
+
 def create_app() -> web.Application:
     app = web.Application()
 
-    # Webhook можно слать и на /, и на /webhook — оба пути работают
+    # Webhook: Telegram шлёт POST сюда
     app.router.add_post("/", handle_webhook)
     app.router.add_post("/webhook", handle_webhook)
+
+    # ✅ Health-check: Render шлёт GET /
+    app.router.add_get("/", healthcheck)
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
