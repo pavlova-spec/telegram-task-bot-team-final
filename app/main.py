@@ -1,67 +1,73 @@
+# app/main.py
 import os
 import logging
+from datetime import datetime
 
-from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.types import Update
+from aiogram.utils import executor
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
 from app.db import init_db, get_active_tasks
 from app.bot_handlers import register_handlers, schedule_task_jobs
 
+# ─────────────────────────────────────────────
+# Настройки логирования
+# ─────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────
+# ENV переменные
+# ─────────────────────────────────────────────
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # например: https://telegram-task-bot-team-final.onrender.com
+WEBHOOK_PATH = "/webhook"              # путь для Telegram
+WEBAPP_HOST = "0.0.0.0"
+WEBAPP_PORT = int(os.getenv("PORT", 10000))
 
 if not BOT_TOKEN:
-    raise SystemExit("⚠️ BOT_TOKEN не задан в переменных окружения")
-
+    raise SystemExit("⚠️ BOT_TOKEN не задан в .env или переменных окружения")
 if not WEBHOOK_URL:
-    raise SystemExit("⚠️ WEBHOOK_URL не задан в переменных окружения")
+    raise SystemExit("⚠️ WEBHOOK_URL не задан в .env или переменных окружения")
 
-# --- глобальные объекты бота ---
+FULL_WEBHOOK_URL = WEBHOOK_URL.rstrip("/") + WEBHOOK_PATH
+
+# ─────────────────────────────────────────────
+# Инициализация бота / диспетчера / планировщика
+# ─────────────────────────────────────────────
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# ВАЖНО: контекст для aiogram (чтобы m.answer() работал)
-Bot.set_current(bot)
-Dispatcher.set_current(dp)
-
 scheduler = AsyncIOScheduler()
 
+# Регистрируем хэндлеры
+register_handlers(dp, scheduler)
 
-async def on_startup(app: web.Application):
+
+# ─────────────────────────────────────────────
+# on_startup / on_shutdown
+# ─────────────────────────────────────────────
+async def on_startup(dp: Dispatcher):
     """
-    Старт приложения.
+    Вызывается один раз при старте webhook-сервера.
     """
-    logger.info("🚀 Стартуем, инициализируем БД и webhook")
+    logger.info("🚀 Стартуем, инициализируем БД и вебхук")
 
-    from datetime import datetime
-
-    # 1) БД
+    # Инициализируем БД
     init_db()
     logger.info("✅ База инициализирована")
 
-    # 2) Хэндлеры
-    register_handlers(dp, scheduler)
-
-    # 3) Планировщик
-    scheduler.start()
-
-    # 4) Рескейдим задачи
+    # Перепланируем активные задачи из БД
     tasks = get_active_tasks()
     for t in tasks:
         try:
             deadline = datetime.fromisoformat(t["deadline_ts"])
         except Exception:
-            logger.exception("❌ Не удалось преобразовать дедлайн у задачи %s", t["id"])
             continue
 
         schedule_task_jobs(
@@ -73,66 +79,52 @@ async def on_startup(app: web.Application):
             scheduler=scheduler,
         )
 
-    # 5) Ставим webhook
-    await bot.set_webhook(WEBHOOK_URL)
-    logger.info("✅ Webhook установлен на %s", WEBHOOK_URL)
+    # Стартуем планировщик напоминаний
+    scheduler.start()
+    logger.info("⏰ Планировщик запущен")
+
+    # Ставим вебхук
+    await bot.set_webhook(FULL_WEBHOOK_URL)
+    logger.info(f"🌐 Webhook установлен: {FULL_WEBHOOK_URL}")
 
 
-async def on_shutdown(app: web.Application):
+async def on_shutdown(dp: Dispatcher):
     """
-    Аккуратное завершение.
+    Аккуратное завершение работы.
+    На Render это вызывается при остановке сервиса.
     """
     logger.info("🛑 Остановка, удаляем webhook и гасим планировщик")
 
     try:
-        scheduler.shutdown()
-    except Exception:
-        pass
+        await bot.delete_webhook()
+    except Exception as e:
+        logger.warning(f"Не удалось удалить webhook: {e}")
 
     try:
-        await bot.delete_webhook()
-    except Exception:
-        pass
+        scheduler.shutdown(wait=False)
+    except Exception as e:
+        logger.warning(f"Ошибка при остановке планировщика: {e}")
 
-    # предупреждение можно игнорировать, но ок
-    session = await bot.get_session()
-    await session.close()
+    # Закрываем хранилище FSM
+    await dp.storage.close()
+    await dp.storage.wait_closed()
 
-
-async def handle_webhook(request: web.Request) -> web.Response:
-    """
-    Приём апдейтов от Telegram (POST).
-    """
-    data = await request.json()
-    update = Update.to_object(data)
-    await dp.process_update(update)
-    return web.Response(text="OK")
+    # Закрываем сессию бота
+    await bot.session.close()
 
 
-# ✅ НОВОЕ: health-check для Render
-async def healthcheck(request: web.Request) -> web.Response:
-    """
-    Render делает GET /, ему нужен 200 OK.
-    """
-    return web.Response(text="OK", status=200)
-
-
-def create_app() -> web.Application:
-    app = web.Application()
-
-    # Webhook: Telegram шлёт POST сюда
-    app.router.add_post("/", handle_webhook)
-    app.router.add_post("/webhook", handle_webhook)
-
-    # ✅ Health-check: Render шлёт GET /
-    app.router.add_get("/", healthcheck)
-
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    return app
-
-
+# ─────────────────────────────────────────────
+# Точка входа
+# ─────────────────────────────────────────────
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "10000"))
-    logger.info("💡 Запускаем aiohttp на порту %s", port)
-    web.run_app(create_app(), host="0.0.0.0", port=port)
+    logger.info("🌍 Запуск webhook-сервера через aiogram.executor")
+
+    executor.start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        skip_updates=True,
+        host=WEBAPP_HOST,
+        port=WEBAPP_PORT,
+    )
