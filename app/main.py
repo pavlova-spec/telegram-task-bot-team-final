@@ -19,16 +19,24 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # полный URL, например: https://telegram-task-bot-team-final.onrender.com/webhook
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # ДОЛЖЕН содержать путь, например: https://.../webhook
 
 if not BOT_TOKEN:
     raise SystemExit("⚠️ BOT_TOKEN не задан")
 if not WEBHOOK_URL:
     raise SystemExit("⚠️ WEBHOOK_URL не задан")
 
-# Разбираем URL, чтобы вытащить путь (/webhook)
+# --- Разбираем URL и жёстко требуем путь ---
 parsed = urlparse(WEBHOOK_URL)
-WEBHOOK_PATH = parsed.path or "/webhook"
+
+if not parsed.path or parsed.path == "/":
+    # Специально не даём запускаться с голым корнем, чтобы не было рассинхрона
+    raise SystemExit(
+        "⚠️ WEBHOOK_URL должен содержать путь, например:\n"
+        "https://telegram-task-bot-team-final.onrender.com/webhook"
+    )
+
+WEBHOOK_PATH = parsed.path
 
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.getenv("PORT", 10000))
@@ -68,7 +76,7 @@ async def on_startup(dp: Dispatcher):
     scheduler.start()
     logger.info("⏰ Планировщик запущен")
 
-    # ставим webhook ровно на WEBHOOK_URL
+    # Ставим webhook РОВНО на WEBHOOK_URL (включая путь /webhook)
     await bot.set_webhook(WEBHOOK_URL)
     logger.info(f"🌐 Webhook установлен: {WEBHOOK_URL}")
 
@@ -96,7 +104,7 @@ if __name__ == "__main__":
 
     executor.start_webhook(
         dispatcher=dp,
-        webhook_path=WEBHOOK_PATH,
+        webhook_path=WEBHOOK_PATH,  # ← тот же путь, что и в WEBHOOK_URL
         on_startup=on_startup,
         on_shutdown=on_shutdown,
         skip_updates=True,
