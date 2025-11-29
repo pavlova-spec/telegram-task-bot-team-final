@@ -97,9 +97,11 @@ async def on_shutdown(dp: Dispatcher):
     session = await bot.get_session()
     await session.close()
 
-
 if __name__ == "__main__":
     logger.info("🌍 Запуск webhook-сервера через aiogram.executor")
+
+    app = executor.get_app()          # получаем веб-приложение
+    app.router.add_get("/", handle_root)  # добавляем ответ на GET /
 
     executor.start_webhook(
         dispatcher=dp,
