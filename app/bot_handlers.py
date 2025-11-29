@@ -128,7 +128,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
         await state.finish()
 
-    # ────────────────────────────────
+        # ────────────────────────────────
     # Кнопка «Мои задачи»
     # ────────────────────────────────
     @dp.message_handler(lambda m: m.text == "📋 Мои задачи")
@@ -147,13 +147,28 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         for r in rows:
             dl = datetime.fromisoformat(r["deadline_ts"]).strftime("%d.%m.%Y %H:%M")
 
+            # --- кто уже отметил выполнение ---
             completions = get_task_completions(r["id"])
             if completions:
-                ids_str = ", ".join(str(c["user_id"]) for c in completions)
-                done_line = f"✅ Выполнили (user_id): {ids_str}"
+                users_str = []
+                for c in completions:
+                    user_id = c["user_id"]
+                    try:
+                        tg_user = await dp.bot.get_chat(user_id)
+                        if tg_user.username:
+                            users_str.append(f"@{tg_user.username}")
+                        else:
+                            # если ника нет, показываем имя
+                            users_str.append(tg_user.full_name)
+                    except Exception as e:
+                        logger.warning("Не смогли получить данные пользователя %s: %s", user_id, e)
+                        users_str.append(f"ID:{user_id}")
+
+                done_line = "✅ Выполнили: " + ", ".join(users_str)
             else:
                 done_line = "⏳ Пока никто не отметил выполнение"
 
+            # --- блок текста по задаче ---
             block = (
                 f"• <b>{r['title']}</b>\n"
                 f"   🕒 до <b>{dl}</b>\n"
@@ -161,6 +176,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             )
             text_lines.append(block)
 
+            # инлайн-кнопки для этой задачи
             kb.add(
                 InlineKeyboardButton(
                     text=f"✅ Я сделал(а): {r['title'][:20]}",
