@@ -100,9 +100,6 @@ async def on_shutdown(dp: Dispatcher):
 if __name__ == "__main__":
     logger.info("🌍 Запуск webhook-сервера через aiogram.executor")
 
-    app = executor.get_app()          # получаем веб-приложение
-    app.router.add_get("/", handle_root)  # добавляем ответ на GET /
-
     executor.start_webhook(
         dispatcher=dp,
         webhook_path=WEBHOOK_PATH,
