@@ -179,11 +179,11 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             # инлайн-кнопки для этой задачи
             kb.add(
                 InlineKeyboardButton(
-                    text=f"✅ Я сделал(а): {r['title'][:20]}",
+                    text=f"✅ Я сделал(а)",
                     callback_data=f"done:{r['id']}",
                 ),
                 InlineKeyboardButton(
-                    text="🔒 Закрыть задачу",
+                    text="🔒 Закрыть",
                     callback_data=f"close:{r['id']}",
                 ),
             )
