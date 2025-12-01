@@ -1,4 +1,3 @@
-# app/db.py
 import os
 import sqlite3
 from datetime import datetime
@@ -47,6 +46,21 @@ def init_db():
             user_id INTEGER NOT NULL,
             completed_at TEXT NOT NULL,
             UNIQUE(task_id, user_id)
+        )
+        """
+    )
+
+    # Таблица последних действий (для отмены)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS last_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            action_type TEXT NOT NULL,       -- 'close_task' или 'completion'
+            task_id INTEGER NOT NULL,
+            completion_id INTEGER,
+            created_at TEXT NOT NULL
         )
         """
     )
@@ -109,7 +123,7 @@ def mark_done(task_id: int):
 
 def get_active_tasks():
     """
-    Все активные задачи (для рескейда напоминаний на старте бота).
+    Все активные задачи (для пересоздания напоминаний на старте бота).
     """
     conn = get_conn()
     cur = conn.cursor()
@@ -123,22 +137,22 @@ def get_active_tasks():
 # Отметки выполнения задач
 # ─────────────────────────────────────────────
 
-def add_completion(task_id: int, user_id: int):
-    """
-    Отметить, что пользователь выполнил задачу.
-    Повторный вызов для того же (task_id, user_id) игнорируется.
-    """
-    conn = get_conn()
+def add_completion(task_id: int, user_id: int) -> int:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
+
     cur.execute(
         """
-        INSERT OR IGNORE INTO task_completions (task_id, user_id, completed_at)
+        INSERT INTO task_completions (task_id, user_id, completed_at)
         VALUES (?, ?, ?)
         """,
         (task_id, user_id, datetime.utcnow().isoformat()),
     )
     conn.commit()
+    completion_id = cur.lastrowid
     conn.close()
+    return completion_id
 
 
 def get_task(task_id: int):
@@ -154,8 +168,7 @@ def get_task(task_id: int):
 
 
 def get_task_completions(task_id: int):
-    """
-    Получить всех пользователей, отметивших задачу выполненной.
+    """Получить всех пользователей, отметивших задачу выполненной.
     """
     conn = get_conn()
     cur = conn.cursor()
@@ -170,3 +183,74 @@ def get_task_completions(task_id: int):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+# ─────────────────────────────────────────────
+# UNDO: последние действия
+# ─────────────────────────────────────────────
+
+def save_last_action(
+    chat_id: int,
+    user_id: int,
+    action_type: str,
+    task_id: int,
+    completion_id: int | None = None,
+):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO last_actions (chat_id, user_id, action_type, task_id, completion_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (chat_id, user_id, action_type, task_id, completion_id, datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_last_action(chat_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT *
+        FROM last_actions
+        WHERE chat_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (chat_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def clear_last_action(chat_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM last_actions WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+
+def restore_task_status(task_id: int):
+    """
+    Возвращаем задачу в статус 'active'.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE tasks SET status = 'active' WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_completion(completion_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM task_completions WHERE id = ?", (completion_id,))
+    conn.commit()
+    conn.close()
