@@ -427,18 +427,19 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             reply_markup=main_menu(),
         )
 
-    # ────────────────────────────────
+        # ────────────────────────────────
     # /undo и кнопка «Отменить последнее»
     # ────────────────────────────────
-        @dp.message_handler(commands=["undo"])
+    @dp.message_handler(commands=["undo"])
     @dp.message_handler(lambda m: m.text == "↩️ Отменить последнее")
     async def undo_last(m: types.Message, state: FSMContext):
         """
-        1) Если сейчас пользователь в режиме ввода новой задачи (FSM),
-           просто выходим из этого режима и ничего не сохраняем.
-        2) Иначе откатываем последнее действие из last_actions.
+        1) Если пользователь сейчас вводит новую задачу (FSM),
+           просто отменяем ввод.
+        2) Если действие уже выполнено — откатываем из last_actions.
         """
-        # 1. Сначала проверяем, не висим ли мы в режиме ввода задачи
+
+        # --- 1. Проверка FSM (ввод новой задачи)
         current_state = await state.get_state()
         if current_state == TaskFSM.waiting_single_line.state:
             await state.finish()
@@ -448,12 +449,42 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             )
             return
 
-        # 2. Обычная отмена последнего действия из таблицы last_actions
+        # --- 2. Обычная отмена последнего действия
         action = get_last_action(m.chat.id)
         if not action:
             await m.answer(
                 "Отменять пока нечего — последнее действие не найдено.",
                 reply_markup=main_menu(),
+            )
+            return
+
+        action_type = action["action_type"]
+        task_id = action["task_id"]
+        completion_id = action.get("completion_id")
+
+        task = get_task(task_id)
+        title = task["title"] if task else f"задача #{task_id}"
+
+        # --- отменяем в зависимости от типа
+        if action_type == "add_task":
+            mark_done(task_id)
+            msg = f"↩️ Отменила добавление задачи: «{title}». Задача скрыта."
+        elif action_type == "close_task":
+            restore_task_status(task_id)
+            msg = f"↩️ Отменила закрытие задачи: «{title}». Она снова активна."
+        elif action_type == "completion":
+            if completion_id is not None:
+                delete_completion(completion_id)
+                msg = f"↩️ Отменила отметку выполнения задачи: «{title}»."
+            else:
+                msg = "Не получилось отменить отметку выполнения — нет данных."
+        else:
+            msg = "Неизвестный тип действия — отмена невозможна."
+
+        # очищаем лог последнего действия
+        clear_last_action(m.chat.id)
+
+        await m.answer(msg, reply_markup=main_menu())
             )
             return
 
