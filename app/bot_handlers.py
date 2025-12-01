@@ -1,6 +1,6 @@
 # app/bot_handlers.py
 import logging
-from datetime import datetime, timedelta, timezone, time
+from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 
 from aiogram import types, Dispatcher
@@ -48,7 +48,9 @@ def main_menu() -> ReplyKeyboardMarkup:
 
 
 def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
+    # ────────────────────────────────
     # /start
+    # ────────────────────────────────
     @dp.message_handler(commands=["start"])
     async def start_cmd(m: types.Message):
         await m.answer(
@@ -118,7 +120,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             creator_id=m.from_user.id,
         )
 
-        # сохраняем последнее действие (добавление задачи)
+        # логируем добавление задачи
         save_last_action(
             chat_id=m.chat.id,
             user_id=m.from_user.id,
@@ -196,7 +198,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             )
             text_lines.append(block)
 
-            # инлайн-кнопки для этой задачи — "1 ✅" и "1 🔒"
+            # инлайн-кнопки: "1 ✅", "1 🔒"
             kb.add(
                 InlineKeyboardButton(
                     text=f"{idx} ✅",
@@ -215,7 +217,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
 
     # ────────────────────────────────
-    # ГЛОБАЛЬНЫЙ ОДНОСТРОЧНЫЙ ВВОД (в любом чате, без FSM)
+    # Глобальный однострочный ввод (в любом чате)
     # ────────────────────────────────
     @dp.message_handler(
         lambda m: m.text and not m.text.startswith("/"),
@@ -229,7 +231,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         """
         text = m.text.strip()
 
-        # Не трогаем тексты кнопок
+        # не трогаем тексты кнопок
         if text in ("➕ Новая задача", "📋 Мои задачи", "↩️ Отменить последнее"):
             return
 
@@ -259,7 +261,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             creator_id=m.from_user.id,
         )
 
-        # сохраняем последнее действие (добавление задачи)
+        # логируем добавление задачи
         save_last_action(
             chat_id=m.chat.id,
             user_id=m.from_user.id,
@@ -294,7 +296,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
 
     # ────────────────────────────────
-    # /done 5 — старый способ закрыть задачу
+    # /done — старый способ закрыть задачу
     # ────────────────────────────────
     @dp.message_handler(commands=["done"])
     async def done_cmd(m: types.Message):
@@ -310,7 +312,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
         mark_done(task_id)
 
-        # логируем последнее действие закрытия
+        # логируем закрытие
         save_last_action(
             chat_id=m.chat.id,
             user_id=m.from_user.id,
@@ -343,7 +345,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         user = callback_query.from_user
         completion_id = add_completion(task_id, user.id)
 
-        # сохраняем последнее действие — отметка выполнения
+        # логируем отметку выполнения
         chat_id = callback_query.message.chat.id
         save_last_action(
             chat_id=chat_id,
@@ -374,10 +376,9 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             await callback_query.answer("Некорректный ID задачи 🤔", show_alert=True)
             return
 
-        # помечаем задачу завершённой
         mark_done(task_id)
 
-        # сохраняем последнее действие — закрытие задачи
+        # логируем закрытие задачи
         chat_id = callback_query.message.chat.id
         user_id = callback_query.from_user.id
         save_last_action(
@@ -391,7 +392,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         await callback_query.answer("Задача закрыта для всех 🟢", show_alert=False)
 
     # ────────────────────────────────
-    # /close 5 — закрыть задачу для всех
+    # /close — закрыть задачу для всех
     # ────────────────────────────────
     @dp.message_handler(commands=["close"])
     async def close_cmd(m: types.Message):
@@ -418,6 +419,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
         mark_done(task_id)
 
+        # логируем закрытие
         save_last_action(
             chat_id=m.chat.id,
             user_id=m.from_user.id,
@@ -443,9 +445,9 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         2) Если действие уже выполнено — откатываем из last_actions.
         """
 
-        # --- 1. Проверка FSM (ввод новой задачи)
+        # 1. Проверка FSM: нажали «Новая задача», но передумали
         current_state = await state.get_state()
-        if current_state == TaskFSM.waiting_single_line.state:
+        if current_state is not None:
             await state.finish()
             await m.answer(
                 "Окей, отменяю ввод новой задачи. Ничего не сохранила 🙂",
@@ -453,7 +455,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             )
             return
 
-        # --- 2. Обычная отмена последнего действия
+        # 2. Обычная отмена последнего действия в чате
         action = get_last_action(m.chat.id)
         if not action:
             await m.answer(
@@ -469,14 +471,16 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         task = get_task(task_id)
         title = task["title"] if task else f"задача #{task_id}"
 
-        # --- отменяем в зависимости от типа
         if action_type == "add_task":
+            # «отмена добавления» — просто скрываем задачу
             mark_done(task_id)
             msg = f"↩️ Отменила добавление задачи: «{title}». Задача скрыта."
         elif action_type == "close_task":
+            # возвращаем задачу в active
             restore_task_status(task_id)
             msg = f"↩️ Отменила закрытие задачи: «{title}». Она снова активна."
         elif action_type == "completion":
+            # снимаем отметку выполнения
             if completion_id is not None:
                 delete_completion(completion_id)
                 msg = f"↩️ Отменила отметку выполнения задачи: «{title}»."
@@ -485,7 +489,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         else:
             msg = "Неизвестный тип действия — отмена невозможна."
 
-        # очищаем лог последнего действия
         clear_last_action(m.chat.id)
 
         await m.answer(msg, reply_markup=main_menu())
@@ -510,11 +513,10 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 def _shift_to_work_morning(date_obj):
     """
     Берём дату, возвращаем datetime в 09:00 утра.
-    Если это суббота/воскресенье — сдвигаем на ближайший понедельник 09:00.
+    Если это суббота/воскресенье — сдвигаем на ближайший понедельник.
     """
-    from datetime import date as _date  # локально, чтобы не путать импорты
+    from datetime import date as _date
 
-    # если нам прилетел datetime — берём только дату
     if not isinstance(date_obj, _date):
         date_obj = date_obj.date()
 
@@ -536,7 +538,6 @@ async def reminder_job(bot, task_id: int, chat_id: int, offset: int):
     if not task:
         return
 
-    # если задача уже закрыта — не напоминаем
     if task.get("status") != "active":
         return
 
@@ -572,10 +573,7 @@ def schedule_task_jobs(
     - за 1 день до дедлайна, в 09:00 (рабочий день)
     - в день дедлайна, в 09:00 (если это рабочий день,
       иначе перенос на ближайший понедельник)
-
-    Напоминания отправляются только если задача всё ещё active.
     """
-    # нормализуем deadline к datetime
     if isinstance(deadline, str):
         try:
             deadline_dt = datetime.fromisoformat(deadline)
@@ -586,8 +584,6 @@ def schedule_task_jobs(
 
     for offset in (3, 1, 0):
         target_date = (deadline_dt - timedelta(days=offset)).date()
-
-        # приводим к рабочему дню 09:00
         remind_dt = _shift_to_work_morning(target_date)
 
         # если это время уже прошло — не планируем
