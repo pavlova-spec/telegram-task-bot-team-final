@@ -1,6 +1,6 @@
 # app/bot_handlers.py
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time  # ← добавили time
 
 from aiogram import types, Dispatcher
 from aiogram.dispatcher import FSMContext
@@ -128,7 +128,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
         await state.finish()
 
-        # ────────────────────────────────
+    # ────────────────────────────────
     # Кнопка «Мои задачи»
     # ────────────────────────────────
     @dp.message_handler(lambda m: m.text == "📋 Мои задачи")
@@ -158,10 +158,13 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
                         if tg_user.username:
                             users_str.append(f"@{tg_user.username}")
                         else:
-                            # если ника нет, показываем имя
                             users_str.append(tg_user.full_name)
                     except Exception as e:
-                        logger.warning("Не смогли получить данные пользователя %s: %s", user_id, e)
+                        logger.warning(
+                            "Не смогли получить данные пользователя %s: %s",
+                            user_id,
+                            e,
+                        )
                         users_str.append(f"ID:{user_id}")
 
                 done_line = "✅ Выполнили: " + ", ".join(users_str)
@@ -179,7 +182,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             # инлайн-кнопки для этой задачи
             kb.add(
                 InlineKeyboardButton(
-                    text=f"✅ Я сделал(а)",
+                    text="✅ Я сделал(а)",
                     callback_data=f"done:{r['id']}",
                 ),
                 InlineKeyboardButton(
@@ -376,6 +379,55 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
 
 # ────────────────────────────────
+# Вспомогательные функции для напоминаний
+# ────────────────────────────────
+def _shift_to_work_morning(date_obj):
+    """
+    Берём дату, возвращаем datetime в 09:00 утра.
+    Если это суббота/воскресенье — сдвигаем на ближайший понедельник 09:00."""
+    from datetime import date as _date  # локально, чтобы не путать импорты
+
+    if not isinstance(date_obj, _date):
+        date_obj = date_obj.date()
+
+    # 5 = суббота, 6 = воскресенье
+    while date_obj.weekday() >= 5:
+        date_obj += timedelta(days=1)
+
+    return datetime.combine(date_obj, time(9, 0))
+
+
+async def reminder_job(bot, task_id: int, chat_id: int, offset: int):
+    """
+    Джоба для APScheduler: перед отправкой проверяем,
+    что задача ещё active.
+    """
+    from app.db import get_task  # локальный импорт, чтобы избежать циклов
+
+    task = get_task(task_id)
+    if not task:
+        return
+
+    # если задача уже закрыта — не напоминаем
+    if task.get("status") != "active":
+        return
+
+    title = task.get("title", "без названия")
+
+    texts = {
+        3: f"⏳ Напоминание: через пару дней дедлайн по задаче: «{title}»",
+        1: f"⚡ Напоминание: завтра дедлайн по задаче: «{title}»",
+        0: f"🔥 Сегодня дедлайн по задаче: «{title}»",
+    }
+
+    text = texts.get(offset)
+    if not text:
+        return
+
+    await bot.send_message(chat_id, text)
+
+
+# ────────────────────────────────
 # Планирование напоминаний
 # ────────────────────────────────
 def schedule_task_jobs(
@@ -386,23 +438,37 @@ def schedule_task_jobs(
     deadline: datetime,
     scheduler: AsyncIOScheduler,
 ):
-    def make_text(offset: int) -> str:
-        texts = {
-            3: f"⏳ Через ТРИ дня дедлайн по задаче: «{title}»",
-            1: f"⚡ Завтра сдавать: «{title}»",
-            0: f"🔥 Сегодня дедлайн по: «{title}»",
-        }
-        return texts[offset]
+    """
+    Планируем напоминания:
+    - за 3 дня до дедлайна, в 09:00 (рабочий день)
+    - за 1 день до дедлайна, в 09:00 (рабочий день)
+    - в день дедлайна, в 09:00 (если это рабочий день,
+      иначе перенос на ближайший понедельник)
+
+    Напоминания отправляются только если задача всё ещё active.
+    """
+    # нормализуем deadline к datetime
+    if isinstance(deadline, str):
+        try:
+            deadline_dt = datetime.fromisoformat(deadline)
+        except ValueError:
+            return
+    else:
+        deadline_dt = deadline
 
     for offset in (3, 1, 0):
-        remind_time = deadline - timedelta(days=offset)
-        if remind_time > datetime.now():
-            scheduler.add_job(
-                dp.bot.send_message,
-                trigger="date",
-                run_date=remind_time,
-                kwargs={
-                    "chat_id": chat_id,
-                    "text": make_text(offset),
-                },
-            )
+        target_date = (deadline_dt - timedelta(days=offset)).date()
+
+        # приводим к рабочему дню 09:00
+        remind_dt = _shift_to_work_morning(target_date)
+
+        # если это время уже прошло — не планируем
+        if remind_dt <= datetime.now():
+            continue
+
+        scheduler.add_job(
+            reminder_job,
+            trigger="date",
+            run_date=remind_dt,
+            args=(dp.bot, task_id, chat_id, offset),
+        )
