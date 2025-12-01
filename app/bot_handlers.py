@@ -488,7 +488,10 @@ def _shift_to_work_morning(date_obj):
     Берём дату, возвращаем datetime в 09:00 утра.
     Если это суббота/воскресенье — сдвигаем на ближайший понедельник 09:00.
     """
-    from datetime import date as _date  # локально, чтобы не путать импортыif not isinstance(date_obj, _date):
+    from datetime import date as _date  # локально, чтобы не путать импорты
+
+    # если нам прилетел datetime — берём только дату
+    if not isinstance(date_obj, _date):
         date_obj = date_obj.date()
 
     # 5 = суббота, 6 = воскресенье
@@ -496,7 +499,6 @@ def _shift_to_work_morning(date_obj):
         date_obj += timedelta(days=1)
 
     return datetime.combine(date_obj, time(9, 0))
-
 
 async def reminder_job(bot, task_id: int, chat_id: int, offset: int):
     """
