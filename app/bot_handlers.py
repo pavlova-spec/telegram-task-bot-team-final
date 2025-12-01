@@ -135,7 +135,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             deadline=deadline,
             scheduler=scheduler,
         )
-        
+
         await m.answer(
             f"✅ Задача «<b>{title}</b>» сохранена.\n"
             f"Дедлайн: <b>{deadline.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
@@ -196,7 +196,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             )
             text_lines.append(block)
 
-            # инлайн-кнопки для этой задачи — Вариант B: "3 ✅" и "3 🔒"
+            # инлайн-кнопки для этой задачи — "1 ✅" и "1 🔒"
             kb.add(
                 InlineKeyboardButton(
                     text=f"{idx} ✅",
@@ -258,7 +258,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             deadline=deadline,
             creator_id=m.from_user.id,
         )
-        
+
         # сохраняем последнее действие (добавление задачи)
         save_last_action(
             chat_id=m.chat.id,
@@ -307,6 +307,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         except ValueError:
             await m.answer("ID должен быть числом")
             return
+
         mark_done(task_id)
 
         # логируем последнее действие закрытия
@@ -373,7 +374,10 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             await callback_query.answer("Некорректный ID задачи 🤔", show_alert=True)
             return
 
-        mark_done(task_id)# сохраняем последнее действие — закрытие задачи
+        # помечаем задачу завершённой
+        mark_done(task_id)
+
+        # сохраняем последнее действие — закрытие задачи
         chat_id = callback_query.message.chat.id
         user_id = callback_query.from_user.id
         save_last_action(
@@ -427,7 +431,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             reply_markup=main_menu(),
         )
 
-        # ────────────────────────────────
+    # ────────────────────────────────
     # /undo и кнопка «Отменить последнее»
     # ────────────────────────────────
     @dp.message_handler(commands=["undo"])
@@ -485,36 +489,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         clear_last_action(m.chat.id)
 
         await m.answer(msg, reply_markup=main_menu())
-            )
-            return
 
-        action_type = action["action_type"]
-        task_id = action["task_id"]
-        completion_id = action.get("completion_id")
-
-        task = get_task(task_id)
-        title = task["title"] if task else f"задача #{task_id}"
-
-        if action_type == "add_task":
-            # считаем, что "отмена добавления" = скрыть задачу
-            mark_done(task_id)
-            msg = f"↩️ Отменила добавление: «{title}». Задача скрыта из списка."
-        elif action_type == "close_task":
-            restore_task_status(task_id)
-            msg = f"↩️ Отменила закрытие задачи: «{title}». Она снова активна."
-        elif action_type == "completion":
-            if completion_id is not None:
-                delete_completion(completion_id)
-                msg = f"↩️ Отменила отметку выполнения для задачи: «{title}»."
-            else:
-                msg = "Не получилось отменить отметку выполнения (нет id записи)."
-        else:
-            msg = "Неизвестный тип действия, отмена невозможна."
-
-        clear_last_action(m.chat.id)
-
-        await m.answer(msg, reply_markup=main_menu())
-        
     # ────────────────────────────────
     # Отладочный хэндлер — всё, что не поймали другие
     # ────────────────────────────────
@@ -548,6 +523,7 @@ def _shift_to_work_morning(date_obj):
         date_obj += timedelta(days=1)
 
     return datetime.combine(date_obj, time(9, 0))
+
 
 async def reminder_job(bot, task_id: int, chat_id: int, offset: int):
     """
