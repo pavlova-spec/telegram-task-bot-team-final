@@ -262,8 +262,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
 
         await m.answer(
-            f"✅ Задача «<b>{title}</b>» сохранена.\n"
-            f"Дедлайн: <b>{deadline.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+            f"✅ Задача «<b>{title}</b>» сохранена.\n"f"Дедлайн: <b>{deadline.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
             "Список активных задач — в кнопке <b>«📋 Мои задачи»</b>.",
             reply_markup=main_menu(),
             parse_mode="HTML",
@@ -381,55 +380,6 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
 
 # ────────────────────────────────
-# Вспомогательные функции для напоминаний
-# ────────────────────────────────
-def _shift_to_work_morning(date_obj):
-    """
-    Берём дату, возвращаем datetime в 09:00 утра.
-    Если это суббота/воскресенье — сдвигаем на ближайший понедельник 09:00."""
-    from datetime import date as _date  # локально, чтобы не путать импорты
-
-    if not isinstance(date_obj, _date):
-        date_obj = date_obj.date()
-
-    # 5 = суббота, 6 = воскресенье
-    while date_obj.weekday() >= 5:
-        date_obj += timedelta(days=1)
-
-    return datetime.combine(date_obj, time(9, 0))
-
-
-async def reminder_job(bot, task_id: int, chat_id: int, offset: int):
-    """
-    Джоба для APScheduler: перед отправкой проверяем,
-    что задача ещё active.
-    """
-    from app.db import get_task  # локальный импорт, чтобы избежать циклов
-
-    task = get_task(task_id)
-    if not task:
-        return
-
-    # если задача уже закрыта — не напоминаем
-    if task.get("status") != "active":
-        return
-
-    title = task.get("title", "без названия")
-
-    texts = {
-        3: f"⏳ Напоминание: через пару дней дедлайн по задаче: «{title}»",
-        1: f"⚡ Напоминание: завтра дедлайн по задаче: «{title}»",
-        0: f"🔥 Сегодня дедлайн по задаче: «{title}»",
-    }
-
-    text = texts.get(offset)
-    if not text:
-        return
-
-    await bot.send_message(chat_id, text)
-
-
-# ────────────────────────────────
 # Планирование напоминаний
 # ────────────────────────────────
 def schedule_task_jobs(
@@ -437,40 +387,71 @@ def schedule_task_jobs(
     task_id: int,
     chat_id: int,
     title: str,
-    deadline: datetime,
-    scheduler: AsyncIOScheduler,
+    deadline: datetime,scheduler: AsyncIOScheduler,
 ):
     """
     Планируем напоминания:
-    - за 3 дня до дедлайна, в 09:00 (рабочий день)
-    - за 1 день до дедлайна, в 09:00 (рабочий день)
-    - в день дедлайна, в 09:00 (если это рабочий день,
-      иначе перенос на ближайший понедельник)
+    - за 3 дня до дедлайна
+    - за 1 день до дедлайна
+    - в день дедлайна
 
-    Напоминания отправляются только если задача всё ещё active.
+    Все напоминания приходят в ТО ЖЕ время, что и сам дедлайн,
+    по московскому времени.
     """
-    # нормализуем deadline к datetime
+
+    # 1. Нормализуем дедлайн
     if isinstance(deadline, str):
         try:
             deadline_dt = datetime.fromisoformat(deadline)
         except ValueError:
+            logger.warning("schedule_task_jobs: плохой формат deadline=%r", deadline)
             return
     else:
         deadline_dt = deadline
 
+    # 2. Приводим дедлайн к московскому времени
+    if deadline_dt.tzinfo is None:
+        deadline_msk = deadline_dt.replace(tzinfo=MOSCOW_TZ)
+    else:
+        deadline_msk = deadline_dt.astimezone(MOSCOW_TZ)
+
+    def make_text(offset: int) -> str:
+        texts = {
+            3: f"⏳ Через ТРИ дня дедлайн по задаче: «{title}»",
+            1: f"⚡ Завтра сдавать: «{title}»",
+            0: f"🔥 Сегодня дедлайн по: «{title}»",
+        }
+        return texts[offset]
+
+    now_msk = datetime.now(MOSCOW_TZ)
+
     for offset in (3, 1, 0):
-        target_date = (deadline_dt - timedelta(days=offset)).date()
+        # Напоминание сдвигаем только по дате, время оставляем как у дедлайна
+        remind_msk = deadline_msk - timedelta(days=offset)
 
-        # приводим к рабочему дню 09:00
-        remind_dt = _shift_to_work_morning(target_date)
-
-        # если это время уже прошло — не планируем
-        if remind_dt <= datetime.now():
+        # Не планируем напоминание в прошлом
+        if remind_msk <= now_msk:
             continue
 
+        # 3. Конвертируем в UTC для Render / APScheduler
+        remind_utc = remind_msk.astimezone(timezone.utc)
+
         scheduler.add_job(
-            reminder_job,
+            dp.bot.send_message,
             trigger="date",
-            run_date=remind_dt,
-            args=(dp.bot, task_id, chat_id, offset),
+            run_date=remind_utc,
+            kwargs={
+                "chat_id": chat_id,
+                "text": make_text(offset),
+            },
+        )
+
+        logger.info(
+            "REMINDER SCHEDULED: task_id=%s offset=%sd chat_id=%s "
+            "remind_msk=%s remind_utc=%s",
+            task_id,
+            offset,
+            chat_id,
+            remind_msk.isoformat(),
+            remind_utc.isoformat(),
         )
