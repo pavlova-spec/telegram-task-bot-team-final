@@ -134,7 +134,9 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             title=title,
             deadline=deadline,
             scheduler=scheduler,
-        )await m.answer(
+        )
+        
+        await m.answer(
             f"✅ Задача «<b>{title}</b>» сохранена.\n"
             f"Дедлайн: <b>{deadline.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
             "Если что, список задач — в кнопке <b>«📋 Мои задачи»</b>.",
