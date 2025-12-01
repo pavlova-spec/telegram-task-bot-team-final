@@ -1,6 +1,6 @@
 # app/bot_handlers.py
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time
 from zoneinfo import ZoneInfo
 
 from aiogram import types, Dispatcher
@@ -20,6 +20,12 @@ from app.db import (
     add_completion,
     get_task,
     get_task_completions,
+    # ↓↓↓ новые функции для undo
+    save_last_action,
+    get_last_action,
+    clear_last_action,
+    restore_task_status,
+    delete_completion,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +43,8 @@ class TaskFSM(StatesGroup):
 
 def main_menu() -> ReplyKeyboardMarkup:
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("➕ Новая задача", "📋 Мои задачи")
+    kb.row("➕ Новая задача", "📋 Мои задачи")
+    kb.add("↩ Отменить последнее")   # новая кнопка
     return kb
 
 
@@ -125,13 +132,12 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             f"✅ Задача «<b>{title}</b>» сохранена.\n"
             f"Дедлайн: <b>{deadline.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
             "Если что, список задач — в кнопке <b>«📋 Мои задачи»</b>.",
-            reply_markup=main_menu(),
-            parse_mode="HTML",
+            reply_markup=main_menu(),parse_mode="HTML",
         )
         await state.finish()
 
     # ────────────────────────────────
-    # Кнопка «Мои задачи»
+    # Кнопка «Мои задачи» (с нумерацией)
     # ────────────────────────────────
     @dp.message_handler(lambda m: m.text == "📋 Мои задачи")
     async def list_tasks(m: types.Message):
@@ -146,7 +152,8 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         text_lines = []
         kb = InlineKeyboardMarkup(row_width=2)
 
-        for r in rows:
+        # ← добавили нумерацию задач
+        for idx, r in enumerate(rows, start=1):
             dl = datetime.fromisoformat(r["deadline_ts"]).strftime("%d.%m.%Y %H:%M")
 
             # --- кто уже отметил выполнение ---
@@ -175,7 +182,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
             # --- блок текста по задаче ---
             block = (
-                f"• <b>{r['title']}</b>\n"
+                f"{idx}. <b>{r['title']}</b>\n"
                 f"   🕒 до <b>{dl}</b>\n"
                 f"   {done_line}"
             )
@@ -184,11 +191,11 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             # инлайн-кнопки для этой задачи
             kb.add(
                 InlineKeyboardButton(
-                    text="✅ Я сделал(а)",
+                    text=f"✅ Сделано (#{idx})",
                     callback_data=f"done:{r['id']}",
                 ),
                 InlineKeyboardButton(
-                    text="🔒 Закрыть",
+                    text=f"🔒 Закрыть (#{idx})",
                     callback_data=f"close:{r['id']}",
                 ),
             )
@@ -215,7 +222,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         text = m.text.strip()
 
         # Не трогаем тексты кнопок
-        if text in ("➕ Новая задача", "📋 Мои задачи"):
+        if text in ("➕ Новая задача", "📋 Мои задачи", "↩ Отменить последнее"):
             return
 
         if len(text) < 17:
@@ -249,8 +256,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             task_id=task_id,
             chat_id=m.chat.id,
             title=title,
-            deadline=deadline,
-            scheduler=scheduler,
+            deadline=deadline,scheduler=scheduler,
         )
 
         logger.info(
@@ -262,7 +268,8 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         )
 
         await m.answer(
-            f"✅ Задача «<b>{title}</b>» сохранена.\n"f"Дедлайн: <b>{deadline.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+            f"✅ Задача «<b>{title}</b>» сохранена.\n"
+            f"Дедлайн: <b>{deadline.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
             "Список активных задач — в кнопке <b>«📋 Мои задачи»</b>.",
             reply_markup=main_menu(),
             parse_mode="HTML",
@@ -283,8 +290,18 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             await m.answer("ID должен быть числом")
             return
         mark_done(task_id)
+
+        # запомним действие
+        save_last_action(
+            chat_id=m.chat.id,
+            user_id=m.from_user.id,
+            action_type="close_task",
+            task_id=task_id,
+            completion_id=None,
+        )
+
         await m.answer(
-            "🟢 Задача закрыта командой /done. Красавчик 👑",
+            "🟢 Задача закрыта командой /done.",
             reply_markup=main_menu(),
         )
 
@@ -305,7 +322,16 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             return
 
         user = callback_query.from_user
-        add_completion(task_id, user.id)
+        completion_id = add_completion(task_id, user.id)
+
+        # пишем в журнал действий
+        save_last_action(
+            chat_id=callback_query.message.chat.id,
+            user_id=user.id,
+            action_type="completion",
+            task_id=task_id,
+            completion_id=completion_id,
+        )
 
         await callback_query.answer(
             "Отметили, что ты выполнил(а) задачу ✅",
@@ -330,6 +356,14 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
         mark_done(task_id)
 
+        save_last_action(
+            chat_id=callback_query.message.chat.id,
+            user_id=callback_query.from_user.id,
+            action_type="close_task",
+            task_id=task_id,
+            completion_id=None,
+        )
+
         await callback_query.answer("Задача закрыта для всех 🟢", show_alert=False)
 
     # ────────────────────────────────
@@ -349,8 +383,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         except ValueError:
             await m.answer(
                 "ID должен быть числом, например: /close 5",
-                parse_mode="Markdown",
-            )
+                parse_mode="Markdown",)
             return
 
         task = get_task(task_id)
@@ -360,10 +393,48 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
         mark_done(task_id)
 
+        save_last_action(
+            chat_id=m.chat.id,
+            user_id=m.from_user.id,
+            action_type="close_task",
+            task_id=task_id,
+            completion_id=None,
+        )
+
         await m.answer(
             f"🔒 Задача #{task_id} «{task['title']}» закрыта и больше не будет в списке.",
             reply_markup=main_menu(),
         )
+
+    # ────────────────────────────────
+    # Кнопка "↩ Отменить последнее"
+    # ────────────────────────────────
+    @dp.message_handler(lambda m: m.text == "↩ Отменить последнее")
+    async def undo_last(m: types.Message):
+        action = get_last_action(m.chat.id)
+        if not action:
+            await m.answer("Отменять пока нечего 🙂", reply_markup=main_menu())
+            return
+
+        msg = None
+
+        if action["action_type"] == "close_task":
+            restore_task_status(action["task_id"])
+            msg = "Вернула последнюю закрытую задачу обратно в активные ✅"
+
+        elif action["action_type"] == "completion":
+            comp_id = action.get("completion_id")
+            if comp_id:
+                delete_completion(comp_id)
+                msg = "Убрала последнюю отметку о выполнении задачи ✅"
+            else:
+                msg = "Не нашла отметку о выполнении для отмены 😕"
+
+        else:
+            msg = "Не получилось понять, что отменять 😅"
+
+        clear_last_action(m.chat.id)
+        await m.answer(msg, reply_markup=main_menu())
 
     # ────────────────────────────────
     # Отладочный хэндлер — всё, что не поймали другие
@@ -380,6 +451,56 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 
 
 # ────────────────────────────────
+# Вспомогательные функции для напоминаний
+# ────────────────────────────────
+def _shift_to_work_morning(date_obj):
+    """
+    Берём дату, возвращаем datetime в 09:00 утра.
+    Если это суббота/воскресенье — сдвигаем на ближайший понедельник 09:00.
+    """
+    from datetime import date as _date  # локально, чтобы не путать импорты
+
+    if not isinstance(date_obj, _date):
+        date_obj = date_obj.date()
+
+    # 5 = суббота, 6 = воскресенье
+    while date_obj.weekday() >= 5:
+        date_obj += timedelta(days=1)
+
+    return datetime.combine(date_obj, time(9, 0))
+
+
+async def reminder_job(bot, task_id: int, chat_id: int, offset: int):
+    """
+    Джоба для APScheduler: перед отправкой проверяем,
+    что задача ещё active.
+    """
+    from app.db import get_task  # локальный импорт, чтобы избежать циклов
+
+    task = get_task(task_id)
+    if not task:
+        return
+
+    # если задача уже закрыта — не напоминаем
+    if task.get("status") != "active":
+        return
+
+    title = task.get("title", "без названия")
+
+    texts = {
+        3: f"⏳ Напоминание: через пару дней дедлайн по задаче: «{title}»",
+        1: f"⚡ Напоминание: завтра дедлайн по задаче: «{title}»",
+        0: f"🔥 Сегодня дедлайн по задаче: «{title}»",
+    }
+
+    text = texts.get(offset)
+    if not text:
+        return
+
+    await bot.send_message(chat_id, text)
+
+
+# ────────────────────────────────
 # Планирование напоминаний
 # ────────────────────────────────
 def schedule_task_jobs(
@@ -387,71 +508,39 @@ def schedule_task_jobs(
     task_id: int,
     chat_id: int,
     title: str,
-    deadline: datetime,scheduler: AsyncIOScheduler,
+    deadline: datetime,
+    scheduler: AsyncIOScheduler,
 ):
     """
     Планируем напоминания:
-    - за 3 дня до дедлайна
-    - за 1 день до дедлайна
-    - в день дедлайна
+    - за 3 дня до дедлайна, в 09:00 (рабочий день)
+    - за 1 день до дедлайна, в 09:00 (рабочий день)
+    - в день дедлайна, в 09:00 (если это рабочий день,
+      иначе перенос на ближайший понедельник)
 
-    Все напоминания приходят в ТО ЖЕ время, что и сам дедлайн,
-    по московскому времени.
-    """
-
-    # 1. Нормализуем дедлайн
+    Напоминания отправляются только если задача всё ещё active.
+    """# нормализуем deadline к datetime
     if isinstance(deadline, str):
         try:
             deadline_dt = datetime.fromisoformat(deadline)
         except ValueError:
-            logger.warning("schedule_task_jobs: плохой формат deadline=%r", deadline)
             return
     else:
         deadline_dt = deadline
 
-    # 2. Приводим дедлайн к московскому времени
-    if deadline_dt.tzinfo is None:
-        deadline_msk = deadline_dt.replace(tzinfo=MOSCOW_TZ)
-    else:
-        deadline_msk = deadline_dt.astimezone(MOSCOW_TZ)
-
-    def make_text(offset: int) -> str:
-        texts = {
-            3: f"⏳ Через ТРИ дня дедлайн по задаче: «{title}»",
-            1: f"⚡ Завтра сдавать: «{title}»",
-            0: f"🔥 Сегодня дедлайн по: «{title}»",
-        }
-        return texts[offset]
-
-    now_msk = datetime.now(MOSCOW_TZ)
-
     for offset in (3, 1, 0):
-        # Напоминание сдвигаем только по дате, время оставляем как у дедлайна
-        remind_msk = deadline_msk - timedelta(days=offset)
+        target_date = (deadline_dt - timedelta(days=offset)).date()
 
-        # Не планируем напоминание в прошлом
-        if remind_msk <= now_msk:
+        # приводим к рабочему дню 09:00
+        remind_dt = _shift_to_work_morning(target_date)
+
+        # если это время уже прошло — не планируем
+        if remind_dt <= datetime.now():
             continue
 
-        # 3. Конвертируем в UTC для Render / APScheduler
-        remind_utc = remind_msk.astimezone(timezone.utc)
-
         scheduler.add_job(
-            dp.bot.send_message,
+            reminder_job,
             trigger="date",
-            run_date=remind_utc,
-            kwargs={
-                "chat_id": chat_id,
-                "text": make_text(offset),
-            },
-        )
-
-        logger.info(
-            "REMINDER SCHEDULED: task_id=%s offset=%sd chat_id=%s "
-            "remind_msk=%s remind_utc=%s",
-            task_id,
-            offset,
-            chat_id,
-            remind_msk.isoformat(),
-            remind_utc.isoformat(),
+            run_date=remind_dt,
+            args=(dp.bot, task_id, chat_id, offset),
         )
