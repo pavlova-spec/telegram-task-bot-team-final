@@ -57,7 +57,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
-            action_type TEXT NOT NULL,       -- 'close_task' или 'completion'
+            action_type TEXT NOT NULL,       -- 'add_task', 'close_task', 'completion'
             task_id INTEGER NOT NULL,
             completion_id INTEGER,
             created_at TEXT NOT NULL
@@ -168,7 +168,8 @@ def get_task(task_id: int):
 
 
 def get_task_completions(task_id: int):
-    """Получить всех пользователей, отметивших задачу выполненной.
+    """
+    Получить всех пользователей, отметивших задачу выполненной.
     """
     conn = get_conn()
     cur = conn.cursor()
@@ -210,29 +211,64 @@ def save_last_action(
     conn.close()
 
 
-def get_last_action(chat_id: int):
+def get_last_action(chat_id: int, user_id: int | None = None):
+    """
+    Получить последнее действие.
+
+    Если передан user_id — берём последнюю запись
+    именно этого пользователя в данном чате.
+    Если нет — работаем по-старому, только по chat_id.
+    """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT *
-        FROM last_actions
-        WHERE chat_id = ?
-        ORDER BY created_at DESC, id DESC
-        LIMIT 1
-        """,
-        (chat_id,),
-    )
+
+    if user_id is None:
+        cur.execute(
+            """
+            SELECT *
+            FROM last_actions
+            WHERE chat_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (chat_id,),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT *
+            FROM last_actions
+            WHERE chat_id = ? AND user_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (chat_id, user_id),
+        )
+
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
 
 
-def clear_last_action(chat_id: int):
+def clear_last_action(chat_id: int, user_id: int | None = None):
+    """
+    Очистить последнюю запись.
+
+    Если user_id не указан — удаляем все записи по чату (старое поведение).
+    Если указан — чистим только действия конкретного пользователя.
+    """
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("DELETE FROM last_actions WHERE chat_id = ?", (chat_id,))
+
+    if user_id is None:
+        cur.execute("DELETE FROM last_actions WHERE chat_id = ?", (chat_id,))
+    else:
+        cur.execute(
+            "DELETE FROM last_actions WHERE chat_id = ? AND user_id = ?",
+            (chat_id, user_id),
+        )
+
     conn.commit()
     conn.close()
 
