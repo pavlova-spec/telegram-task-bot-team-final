@@ -1,6 +1,7 @@
 # app/bot_handlers.py
 import logging
-from datetime import datetime, timedelta, time  # ← добавили time
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import types, Dispatcher
 from aiogram.dispatcher import FSMContext
@@ -22,6 +23,7 @@ from app.db import (
 )
 
 logger = logging.getLogger(__name__)
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 class TaskFSM(StatesGroup):
