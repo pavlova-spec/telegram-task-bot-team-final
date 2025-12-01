@@ -250,13 +250,15 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             logger.info("INLINE PARSE SKIP (bad datetime): %r", text)
             return
 
-        title = title_parttask_id = add_task(
+        title = title_part
+
+        task_id = add_task(
             chat_id=m.chat.id,
             title=title,
             deadline=deadline,
             creator_id=m.from_user.id,
         )
-
+        
         # сохраняем последнее действие (добавление задачи)
         save_last_action(
             chat_id=m.chat.id,
