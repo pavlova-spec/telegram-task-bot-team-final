@@ -529,19 +529,24 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
 # ────────────────────────────────
 def _shift_to_work_morning(date_obj):
     """
-    Берём дату, возвращаем datetime в 09:00 утра.
+    Берём дату, возвращаем datetime в 09:00 утра по Москве.
     Если это суббота/воскресенье — сдвигаем на ближайший понедельник.
     """
-    from datetime import date as _date
+    from datetime import date as _date, datetime as _dt
 
-    if not isinstance(date_obj, _date):
+    # если нам прилетел datetime — берём только дату
+    if isinstance(date_obj, _dt):
         date_obj = date_obj.date()
+    elif not isinstance(date_obj, _date):
+        # на всякий случай, если пришло что-то странное
+        date_obj = _dt.fromisoformat(str(date_obj)).date()
 
     # 5 = суббота, 6 = воскресенье
     while date_obj.weekday() >= 5:
         date_obj += timedelta(days=1)
 
-    return datetime.combine(date_obj, time(9, 0))
+    # возвращаем 09:00 именно с московской таймзоной
+    return datetime.combine(date_obj, time(9, 0, tzinfo=MOSCOW_TZ))
 
 
 async def reminder_job(bot, task_id: int, chat_id: int, offset: int):
@@ -586,11 +591,12 @@ def schedule_task_jobs(
 ):
     """
     Планируем напоминания:
-    - за 3 дня до дедлайна, в 09:00 (рабочий день)
-    - за 1 день до дедлайна, в 09:00 (рабочий день)
+    - за 3 дня до дедлайна, в 09:00 (рабочий день, по Москве)
+    - за 1 день до дедлайна, в 09:00 (рабочий день, по Москве)
     - в день дедлайна, в 09:00 (если это рабочий день,
-      иначе перенос на ближайший понедельник)
+      иначе перенос на ближайший понедельник, по Москве)
     """
+    # приводим дедлайн к datetime в часовом поясе Москвы
     if isinstance(deadline, str):
         try:
             deadline_dt = datetime.fromisoformat(deadline)
@@ -599,12 +605,24 @@ def schedule_task_jobs(
     else:
         deadline_dt = deadline
 
+    if deadline_dt.tzinfo is None:
+        # считаем, что дедлайн задан по Москве
+        deadline_dt = deadline_dt.replace(tzinfo=MOSCOW_TZ)
+    else:
+        # приводим к Москве
+        deadline_dt = deadline_dt.astimezone(MOSCOW_TZ)
+
+    now_moscow = datetime.now(MOSCOW_TZ)
+
     for offset in (3, 1, 0):
+        # день, относительно которого шлём напоминание
         target_date = (deadline_dt - timedelta(days=offset)).date()
+
+        # приводим к рабочему дню 09:00 (МСК)
         remind_dt = _shift_to_work_morning(target_date)
 
         # если это время уже прошло — не планируем
-        if remind_dt <= datetime.now():
+        if remind_dt <= now_moscow:
             continue
 
         scheduler.add_job(
