@@ -220,7 +220,9 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
     # Глобальный однострочный ввод (в любом чате)
     # ────────────────────────────────
     @dp.message_handler(
-        lambda m: m.text and not m.text.startswith("/"),
+        lambda m: m.text
+        and not m.text.startswith("/")
+        and m.text not in ("➕ Новая задача", "📋 Мои задачи", "↩️ Отменить последнее"),
         state=None,
     )
     async def inline_task_anywhere(m: types.Message):
@@ -231,7 +233,7 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
         """
         text = m.text.strip()
 
-        # не трогаем тексты кнопок
+        # не трогаем тексты кнопок (оставляем, лишним не будет)
         if text in ("➕ Новая задача", "📋 Мои задачи", "↩️ Отменить последнее"):
             return
 
@@ -295,6 +297,8 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             parse_mode="HTML",
         )
 
+        return  # важно: после создания задачи больше ничего не обрабатываем
+
     # ────────────────────────────────
     # /done — старый способ закрыть задачу
     # ────────────────────────────────
@@ -343,10 +347,11 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             return
 
         user = callback_query.from_user
+        chat_id = callback_query.message.chat.id
+
         completion_id = add_completion(task_id, user.id)
 
-        # логируем отметку выполнения
-        chat_id = callback_query.message.chat.id
+        # логируем отметку выполнения (последнее действие)
         save_last_action(
             chat_id=chat_id,
             user_id=user.id,
@@ -376,11 +381,12 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             await callback_query.answer("Некорректный ID задачи 🤔", show_alert=True)
             return
 
+        chat_id = callback_query.message.chat.id
+        user_id = callback_query.from_user.id
+
         mark_done(task_id)
 
         # логируем закрытие задачи
-        chat_id = callback_query.message.chat.id
-        user_id = callback_query.from_user.id
         save_last_action(
             chat_id=chat_id,
             user_id=user_id,
