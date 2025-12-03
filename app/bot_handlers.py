@@ -10,13 +10,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-)
-
-from aiogram.types import (
-    ReplyKeyboardMarkup,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardRemove,  # ← ДОБАВЬ ЭТУ СТРОКУ
+    ReplyKeyboardRemove,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
