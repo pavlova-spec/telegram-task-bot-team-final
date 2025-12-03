@@ -11,6 +11,13 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+
+from aiogram.types import (
+    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardRemove,  # ← ДОБАВЬ ЭТУ СТРОКУ
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.db import (
@@ -64,6 +71,27 @@ def register_handlers(dp: Dispatcher, scheduler: AsyncIOScheduler):
             parse_mode="HTML",
         )
 
+    # ────────────────────────────────
+    # /hidekb — скрыть меню бота
+    # ────────────────────────────────
+    @dp.message_handler(commands=["hidekb"])
+    async def hide_kb(m: types.Message):
+        await m.answer(
+            "Скрыла клавиатуру бота 👌\n"
+            "Чтобы вернуть меню, напиши /showkb",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+
+    # ────────────────────────────────
+    # /showkb — снова показать меню бота
+    # ────────────────────────────────
+    @dp.message_handler(commands=["showkb"])
+    async def show_kb(m: types.Message):
+        await m.answer(
+            "Возвращаю меню бота 👇",
+            reply_markup=main_menu(),
+        )
+        
     # ────────────────────────────────
     # Кнопка «Новая задача»
     # ────────────────────────────────
